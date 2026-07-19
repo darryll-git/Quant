@@ -1,0 +1,12 @@
+[
+    {
+        "name": "Test",
+        "code": "def alpha(data):\n    # Vectorized pandas logic\n    data[\"signal\"] = \"HOLD\"\n    data.loc[data[\"smaShort\"] > data[\"smaLong\"], \"signal\"] = \"BUY\"\n    data.loc[data[\"smaShort\"] < data[\"smaLong\"], \"signal\"] = \"SELL\"\n    return data[\"signal\"]\n",
+        "type": "Python"
+    },
+    {
+        "name": "improved-idk",
+        "code": "def alpha(df):\n    vwap_window = 10\n    \n    # 1. Calculate rolling dollar volume (Price * Volume) and rolling volume\n    dollar_vol = df['close'] * df['volume']\n    rolling_dollar_vol = dollar_vol.rolling(window=vwap_window).sum()\n    rolling_vol = df['volume'].rolling(window=vwap_window).sum()\n    \n    # 2. Compute rolling VWAP\n    vwap = rolling_dollar_vol / rolling_vol\n    \n    # 3. Calculate distance from VWAP\n    # If price is far below VWAP, it's a BUY (mean reversion)\n    # If price is far above VWAP, it's a SELL\n    \n    df['signal'] = \"HOLD\"\n    \n    # Buy when price drops 2% below VWAP\n    df.loc[df['close'] < vwap * 0.98, 'signal'] = \"BUY\"\n    \n    # Sell when price rises 2% above VWAP\n    df.loc[df['close'] > vwap * 1.02, 'signal'] = \"SELL\"\n    \n    return df['signal']",
+        "type": "Python"
+    }
+]

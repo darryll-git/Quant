@@ -3,3 +3,7 @@ uvicorn
 pandas
 numpy
 pydantic
+yfinance
+pyarrow
+sse-starlette
+python-dotenv

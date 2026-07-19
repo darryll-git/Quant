@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { ControlBar } from './ControlBar';
 import { ExecutionLog } from './ExecutionLog';
 import { Visualizer } from './Visualizer';
@@ -7,45 +7,155 @@ import { FormulaInspector } from './FormulaInspector';
 import { AlphaEditor } from './AlphaEditor';
 // @ts-ignore
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { runBacktestService } from '../lib/backtestEngine';
-import type { BacktestResult, LogEntry } from '../lib/backtestEngine';
+import { runBacktestService, fetchStrategies, saveStrategy, deleteStrategy } from '../lib/backtestEngine';
+import type { LogEntry, StreamEvent, CandleData, SMAData, EquityPoint, PerformanceMetrics as Metrics, SavedStrategy } from '../lib/backtestEngine';
 
 const Dashboard: React.FC = () => {
-  const [data, setData] = useState<BacktestResult | null>(null);
-  const [ticker, setTicker] = useState('NVDA');
-  const [dateRange, setDateRange] = useState({ start: '2024-08-01', end: '2024-10-31' });
+  // State for accumulated stream data
+  const [candles, setCandles] = useState<CandleData[]>([]);
+  const [smaShort, setSmaShort] = useState<SMAData[]>([]);
+  const [smaLong, setSmaLong] = useState<SMAData[]>([]);
+  const [equity, setEquity] = useState<EquityPoint[]>([]);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [progress, setProgress] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  const [ticker, setTicker] = useState('SPY');
+  const [dateRange, setDateRange] = useState({ start: '2023-01-01', end: '2024-01-01' });
   const [strategy, setStrategy] = useState('SMA Crossover');
+  const [savedStrategies, setSavedStrategies] = useState<SavedStrategy[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null);
   const [alphaType, setAlphaType] = useState<'Python' | 'Math'>('Python');
-  const [alphaCode, setAlphaCode] = useState('def alpha(data):\n    # Write your strategy here\n    if data["smaShort"] > data["smaLong"]:\n        return "BUY"\n    elif data["smaShort"] < data["smaLong"]:\n        return "SELL"\n    return "HOLD"\n');
+  
+  // Update default code to use pandas vectorized logic which works with the new Sandbox
+  const defaultCode = `def alpha(data):
+    # Vectorized pandas logic
+    data["signal"] = "HOLD"
+    data.loc[data["smaShort"] > data["smaLong"], "signal"] = "BUY"
+    data.loc[data["smaShort"] < data["smaLong"], "signal"] = "SELL"
+    return data["signal"]
+`;
+  const defaultMathCode = `// Vectorized Math logic
+BUY = smaShort > smaLong
+SELL = smaShort < smaLong and smaShort > 0
+`;
+  const [alphaCode, setAlphaCode] = useState(defaultCode);
 
-  const handleRun = async () => {
-    try {
-      const result = await runBacktestService(ticker, dateRange.start, dateRange.end, alphaCode, alphaType);
-      setData(result);
-      setCurrentIndex(0);
-      setIsStreaming(true);
-    } catch (e) {
-      console.error(e);
+  React.useEffect(() => {
+    fetchStrategies().then(strats => {
+      setSavedStrategies(strats);
+    }).catch(e => console.error("Failed to load strategies", e));
+  }, []);
+
+  const handleAlphaTypeChange = (newType: 'Python' | 'Math') => {
+    setAlphaType(newType);
+    if (strategy === 'SMA Crossover') {
+      setAlphaCode(newType === 'Python' ? defaultCode : defaultMathCode);
     }
   };
 
-  useEffect(() => {
-    if (isStreaming && data && currentIndex < data.logs.length) {
-      const timer = setTimeout(() => {
-        setCurrentIndex(prev => prev + 1);
-        setSelectedLog(data.logs[currentIndex]);
-      }, 100);
-      return () => clearTimeout(timer);
-    } else if (data && currentIndex >= data.logs.length) {
+  const handleSaveStrategy = async (name: string) => {
+    try {
+      const newStrategy: SavedStrategy = { name, code: alphaCode, type: alphaType };
+      await saveStrategy(newStrategy);
+      const strats = await fetchStrategies();
+      setSavedStrategies(strats);
+      setStrategy(name);
+    } catch (e) {
+      console.error("Failed to save strategy", e);
+      alert("Failed to save strategy");
+    }
+  };
+
+  const handleDeleteStrategy = async () => {
+    if (strategy === 'SMA Crossover') return;
+    if (confirm(`Are you sure you want to delete ${strategy}?`)) {
+      try {
+        await deleteStrategy(strategy);
+        const strats = await fetchStrategies();
+        setSavedStrategies(strats);
+        setStrategy('SMA Crossover');
+        setAlphaCode(defaultCode);
+      } catch (e) {
+        console.error("Failed to delete strategy", e);
+        alert("Failed to delete strategy");
+      }
+    }
+  };
+
+  const handleStrategyChange = (newStrategy: string) => {
+    setStrategy(newStrategy);
+    if (newStrategy === 'SMA Crossover') {
+      setAlphaCode(defaultCode);
+      setAlphaType('Python');
+      return;
+    }
+    const found = savedStrategies.find(s => s.name === newStrategy);
+    if (found) {
+      setAlphaCode(found.code);
+      setAlphaType(found.type || 'Python');
+    }
+  };
+
+  const handleRun = async () => {
+    // Reset state for new run
+    setCandles([]);
+    setSmaShort([]);
+    setSmaLong([]);
+    setEquity([]);
+    setLogs([]);
+    setMetrics(null);
+    setProgress(0);
+    setError(null);
+    setIsStreaming(true);
+
+    try {
+      await runBacktestService(
+        ticker,
+        dateRange.start,
+        dateRange.end,
+        alphaCode,
+        alphaType,
+        (event: StreamEvent) => {
+          if (event.error) {
+            setError(event.error);
+            setIsStreaming(false);
+            return;
+          }
+          
+          setProgress(event.progress);
+          
+          if (event.candles && event.candles.length > 0) {
+             setCandles(prev => [...prev, ...event.candles]);
+          }
+          if (event.smaShort && event.smaShort.length > 0) {
+             setSmaShort(prev => [...prev, ...event.smaShort]);
+          }
+          if (event.smaLong && event.smaLong.length > 0) {
+             setSmaLong(prev => [...prev, ...event.smaLong]);
+          }
+          if (event.equity && event.equity.length > 0) {
+             setEquity(prev => [...prev, ...event.equity]);
+          }
+          if (event.logs && event.logs.length > 0) {
+             setLogs(prev => [...prev, ...event.logs]);
+          }
+          if (event.metrics) {
+             setMetrics(event.metrics);
+             setIsStreaming(false);
+          }
+        }
+      );
+    } catch (e: any) {
+      setError(e.message || "An error occurred");
+    } finally {
       setIsStreaming(false);
     }
-  }, [isStreaming, currentIndex, data]);
+  };
 
-  const visibleLogs = data ? data.logs.slice(0, currentIndex) : [];
-  const visibleEquity = data ? data.equity.slice(0, currentIndex) : [];
+  const currentEquity = equity.length > 0 ? equity[equity.length - 1].value : 100000;
 
   return (
     <div className="flex flex-col h-screen w-full bg-background overflow-hidden text-gray-300 font-mono">
@@ -56,11 +166,26 @@ const Dashboard: React.FC = () => {
         dateRange={dateRange}
         setDateRange={setDateRange}
         strategy={strategy}
-        setStrategy={setStrategy}
+        setStrategy={handleStrategyChange}
+        strategiesList={savedStrategies.map(s => s.name)}
+        onSaveStrategy={handleSaveStrategy}
+        onDeleteStrategy={handleDeleteStrategy}
         onRun={handleRun}
         isStreaming={isStreaming}
-        equity={visibleEquity.length > 0 ? visibleEquity[visibleEquity.length - 1].value : 100000}
+        equity={currentEquity}
       />
+      
+      {/* Progress Bar & Error Display */}
+      {isStreaming && progress < 100 && !error && (
+        <div className="w-full h-1 bg-gray-800">
+          <div className="h-full bg-accent-cyan transition-all duration-300" style={{ width: `${progress}%` }}></div>
+        </div>
+      )}
+      {error && (
+        <div className="w-full bg-red-900/50 text-red-400 p-2 text-xs text-center border-b border-red-800">
+          ERROR: {error}
+        </div>
+      )}
 
       {/* Main Resizable Layout */}
       <div className="flex-1 overflow-hidden">
@@ -71,7 +196,7 @@ const Dashboard: React.FC = () => {
               <span className="text-xs font-bold text-accent-cyan tracking-widest uppercase">Execution Log</span>
               <span className="text-[10px] text-gray-500">Live Terminal</span>
             </div>
-            <ExecutionLog logs={visibleLogs} onSelect={setSelectedLog} selectedLog={selectedLog} />
+            <ExecutionLog logs={logs} onSelect={setSelectedLog} selectedLog={selectedLog} />
           </Panel>
 
           <PanelResizeHandle className="ResizeHandleOuter" />
@@ -89,10 +214,10 @@ const Dashboard: React.FC = () => {
                   </div>
                 </div>
                 <Visualizer 
-                  candles={data?.candles || []} 
-                  smaShort={data?.smaShort || []} 
-                  smaLong={data?.smaLong || []} 
-                  equity={visibleEquity}
+                  candles={candles} 
+                  smaShort={smaShort} 
+                  smaLong={smaLong} 
+                  equity={equity}
                 />
               </Panel>
 
@@ -105,7 +230,7 @@ const Dashboard: React.FC = () => {
                   <Panel defaultSize={50} minSize={20} className="panel-border bg-panel flex flex-col border-t-0">
                     <AlphaEditor 
                       alphaType={alphaType} 
-                      setAlphaType={setAlphaType} 
+                      setAlphaType={handleAlphaTypeChange} 
                       alphaCode={alphaCode} 
                       setAlphaCode={setAlphaCode} 
                     />
@@ -120,7 +245,7 @@ const Dashboard: React.FC = () => {
                         <div className="p-2 border-b border-gray-800 bg-gray-900/50">
                           <span className="text-xs font-bold text-accent-cyan tracking-widest uppercase">Performance Analytics</span>
                         </div>
-                        <PerformanceMetrics metrics={data?.metrics} />
+                        <PerformanceMetrics metrics={metrics || undefined} />
                       </Panel>
                       
                       <PanelResizeHandle className="ResizeHandleOuter" />

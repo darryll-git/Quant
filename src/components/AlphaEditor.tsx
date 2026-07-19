@@ -35,8 +35,10 @@ export const AlphaEditor: React.FC<AlphaEditorProps> = ({ alphaType, setAlphaTyp
       {/* Helper text */}
       <div className="px-2 py-1 text-[9px] text-gray-500 bg-black/40 border-b border-gray-800 flex gap-4">
         <span>Available Variables:</span>
-        <span className="text-gray-400">price, smaShort, smaLong, position (0 or 1), prevShort, prevLong</span>
-        <span className="ml-auto text-accent-yellow italic">Return 'BUY', 'SELL', or 'HOLD'</span>
+        <span className="text-gray-400">price, close, smaShort, smaLong, volume</span>
+        <span className="ml-auto text-accent-yellow italic">
+          {alphaType === 'Python' ? "Return 'BUY', 'SELL', or 'HOLD'" : "Define BUY = ... and SELL = ..."}
+        </span>
       </div>
 
       {/* Editor */}
